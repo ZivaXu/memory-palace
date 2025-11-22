@@ -1,4 +1,5 @@
 import uvicorn
+import os  # <--- 新增：用于读取系统环境变量
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
@@ -9,7 +10,6 @@ import numpy as np
 
 app = FastAPI()
 
-# 允许跨域
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -17,8 +17,14 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-print("Loading AI Model (this happens once)...")
-model = SentenceTransformer('all-MiniLM-L6-v2') 
+# --- 新增：健康检查接口 (Render 极其需要这个) ---
+# Render 会尝试 ping 根路径 "/"，如果报错，它会以为服务没起
+@app.get("/")
+def read_root():
+    return {"status": "Loci Backend is running"}
+
+print("Loading AI Model...")
+model = SentenceTransformer('all-MiniLM-L6-v2')
 
 class TextInput(BaseModel):
     text: str
@@ -29,17 +35,14 @@ async def analyze_text(input: TextInput):
     if not raw_text:
         raise HTTPException(status_code=400, detail="Text is empty")
 
-    # 简单切片
     chunks = [line.strip() for line in raw_text.split('\n') if len(line.strip()) > 10]
     if len(chunks) < 5:
         return {"error": "Text too short. Please provide at least 5 lines."}
 
-    # 向量化 & 降维
     embeddings = model.encode(chunks)
     reducer = umap.UMAP(n_components=3, n_neighbors=5, min_dist=0.1, random_state=42)
     embedding_3d = reducer.fit_transform(embeddings)
 
-    # 聚类
     n_clusters = min(5, len(chunks))
     kmeans = KMeans(n_clusters=n_clusters, random_state=42)
     labels = kmeans.fit_predict(embeddings)
@@ -60,4 +63,10 @@ async def analyze_text(input: TextInput):
     return {"nodes": nodes, "links": links}
 
 if __name__ == "__main__":
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    # --- 修改重点：动态获取端口 ---
+    # 如果在 Render 上，它会从环境变量取 PORT
+    # 如果在本地，找不到 PORT 变量，就默认用 8000
+    port = int(os.environ.get("PORT", 8000))
+
+    # host 必须是 "0.0.0.0"，不能是 "localhost"
+    uvicorn.run(app, host="0.0.0.0", port=port)
